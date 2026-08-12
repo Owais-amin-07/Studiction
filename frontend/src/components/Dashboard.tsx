@@ -383,38 +383,6 @@ function ThirtyDayPlan({ plan, tier }: { plan: string; tier: Tier }) {
 
 
 
-/* ── Recovery Hub Entry Card ── */
-<motion.div
-  initial={{ opacity: 0, y: 10 }}
-  animate={{ opacity: 1, y: 0 }}
-  transition={{ delay: 1, duration: 0.6 }}
-  className="mb-4"
->
-  <motion.button
-    onClick={() => setView('recovery-hub')}  // ADD: You'll need to pass this from parent
-    whileHover={{ scale: 1.02 }}
-    whileTap={{ scale: 0.98 }}
-    className="w-full rounded-2xl border border-emerald-500/20 backdrop-blur-md p-6 text-left group"
-    style={{
-      background: 'linear-gradient(135deg, rgba(72,207,173,0.08), rgba(72,207,173,0.02))',
-      boxShadow: '0 0 40px rgba(72,207,173,0.1), inset 0 1px 0 rgba(255,255,255,0.06)',
-    }}
-  >
-    <div className="flex items-center gap-4">
-      <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
-        style={{ background: 'rgba(72,207,173,0.15)', border: '1px solid rgba(72,207,173,0.3)' }}>
-        <Sparkles size={24} style={{ color: '#48cfad' }} />
-      </div>
-      <div className="flex-1">
-        <h3 className="text-lg font-semibold text-white mb-1">Recovery Hub</h3>
-        <p className="text-sm text-zinc-400">Games, videos, challenges & more for your wellness journey</p>
-      </div>
-      <ArrowLeft size={20} className="text-zinc-600 group-hover:text-emerald-400 transition-colors rotate-180" />
-    </div>
-  </motion.button>
-</motion.div>
-
-
 
 // ─── PDF Download ─────────────────────────────────────────────────────────────
 
