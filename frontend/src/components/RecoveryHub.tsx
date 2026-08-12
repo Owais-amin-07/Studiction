@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import AmbientToggle from "./RecoveryHub/AmbientToggle";
 import { 
   Gamepad2, Video, Target, BookOpen, Wind, 
-  ArrowLeft, Brain, Sparkles, Zap, Heart
+  ArrowLeft,
 } from 'lucide-react';
 
 // Import section views

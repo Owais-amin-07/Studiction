@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Download, CheckCircle2, Circle, ChevronRight, Flame, Brain, Shield, AlertTriangle, Zap, Stethoscope } from 'lucide-react';
 import * as api from '../services/api';
-import { Sparkles, ArrowLeft } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

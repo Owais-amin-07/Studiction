@@ -4,9 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Brain, BookOpen, Leaf, Heart, Star, Lightbulb, 
   Target, Shield, Music, Coffee, Moon, Sun,
-  Play, Pause, RotateCcw, LogOut, CheckCircle2, 
-  CircleDashed, Clock, Gauge, LayoutGrid, MousePointerClick,
-  Sparkles, Home, Check, ArrowLeft
+  Play, Pause, RotateCcw, LogOut, CheckCircle2, Clock, MousePointerClick,
+  Sparkles, Check
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
