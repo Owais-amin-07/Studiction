@@ -3,6 +3,7 @@ const jwt     = require('jsonwebtoken');
 const axios   = require('axios');
 const User    = require('../models/User');
 const protect = require('../middleware/auth');
+const { sendOtpEmail } = require('../utils/mailer');
 
 const router = express.Router();
 
@@ -11,6 +12,8 @@ function signToken(userId) {
 }
 
 // POST /api/auth/signup
+// Creates the account in an UNVERIFIED state and emails a 6-digit OTP.
+// No token is issued here — that only happens after /verify-otp succeeds.
 router.post('/signup', async (req, res, next) => {
   try {
     const { name, email, password } = req.body;
@@ -18,12 +21,79 @@ router.post('/signup', async (req, res, next) => {
       return res.status(400).json({ error: 'Name, email, and password are required' });
     if (password.length < 6)
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    const existing = await User.findOne({ email: email.toLowerCase().trim() });
-    if (existing)
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existing = await User.findOne({ email: normalizedEmail });
+
+    let user;
+    if (existing && existing.isVerified) {
       return res.status(409).json({ error: 'An account with this email already exists' });
-    const username = '@' + name.trim().split(' ')[0].toLowerCase();
-    const user = await User.create({ name, email, password, username });
-    res.status(201).json({ token: signToken(user._id), user: user.toClientJSON() });
+    } else if (existing) {
+      // Previously started but never verified — let them restart cleanly
+      // rather than getting stuck behind a dead signup attempt.
+      existing.name     = name;
+      existing.password = password;
+      existing.username = '@' + name.trim().split(' ')[0].toLowerCase();
+      user = existing;
+    } else {
+      const username = '@' + name.trim().split(' ')[0].toLowerCase();
+      user = new User({ name, email: normalizedEmail, password, username });
+    }
+
+    await user.save(); // ensures the account (and its _id) exists before we email a code tied to it
+    const code = await user.issueOtp();
+    await sendOtpEmail(user.email, code);
+
+    res.status(201).json({ message: 'Verification code sent to your email', email: user.email });
+  } catch (err) { next(err); }
+});
+
+// POST /api/auth/verify-otp
+// The moment verification actually succeeds: marks the account verified,
+// clears the OTP, and — only now — issues the login token.
+router.post('/verify-otp', async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp)
+      return res.status(400).json({ error: 'Email and code are required' });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() })
+      .select('+otpHash +otpExpiresAt +otpAttempts +otpResendCount +lastOtpSentAt');
+    if (!user)
+      return res.status(404).json({ error: 'No pending signup found for this email' });
+    if (user.isVerified)
+      return res.status(400).json({ error: 'This account is already verified' });
+
+    const result = await user.verifyOtp(otp);
+    if (!result.ok)
+      return res.status(result.status).json({ error: result.error });
+
+    res.json({ token: signToken(user._id), user: user.toClientJSON() });
+  } catch (err) { next(err); }
+});
+
+// POST /api/auth/resend-otp
+router.post('/resend-otp', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email)
+      return res.status(400).json({ error: 'Email is required' });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() })
+      .select('+otpHash +otpExpiresAt +otpAttempts +otpResendCount +lastOtpSentAt');
+    if (!user)
+      return res.status(404).json({ error: 'No pending signup found for this email' });
+    if (user.isVerified)
+      return res.status(400).json({ error: 'This account is already verified' });
+
+    const check = user.canResendOtp();
+    if (!check.ok)
+      return res.status(check.status).json({ error: check.error });
+
+    const code = await user.issueOtp({ isResend: true });
+    await sendOtpEmail(user.email, code);
+
+    res.json({ message: 'A new code has been sent' });
   } catch (err) { next(err); }
 });
 
@@ -39,6 +109,8 @@ router.post('/login', async (req, res, next) => {
     const isMatch = await user.comparePassword(password);
     if (!isMatch)
       return res.status(401).json({ error: 'Incorrect password' });
+    if (!user.isVerified)
+      return res.status(403).json({ error: 'Please verify your email before logging in', email: user.email });
     res.json({ token: signToken(user._id), user: user.toClientJSON() });
   } catch (err) { next(err); }
 });
@@ -90,10 +162,13 @@ router.post('/google', async (req, res, next) => {
     if (!user) {
       // New user — create without password
       const username = '@' + (name || email).trim().split(' ')[0].toLowerCase();
-      user = await User.create({ name: name || email.split('@')[0], email, googleId, username });
-    } else if (!user.googleId) {
-      // Existing email/password user — link their Google account
-      user.googleId = googleId;
+      user = await User.create({ name: name || email.split('@')[0], email, googleId, username, isVerified: true });
+    } else if (!user.googleId || !user.isVerified) {
+      // Existing email/password user — link their Google account, and if
+      // they'd never finished OTP verification, Google confirming the same
+      // email address is just as good as one, so mark them verified.
+      user.googleId   = googleId;
+      user.isVerified = true;
       await user.save();
     }
 

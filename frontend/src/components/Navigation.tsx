@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Home, Activity, Brain, User, Sparkles, ChevronRight } from 'lucide-react';
+import { Home, Activity, Brain, User, Sparkles, ChevronRight, Crown } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 interface NavbarProps {
@@ -8,6 +8,7 @@ interface NavbarProps {
   onAccountClick?: () => void;
   onDashboardClick?: () => void;
   onHomeClick?: () => void;
+  onPremiumClick?: () => void;
   isLoggedIn?: boolean;
 }
 
@@ -37,7 +38,7 @@ const HamburgerIcon = ({ isOpen }: { isOpen: boolean }) => (
 
 
 
-export default function Navigation({ onLoginClick, onAccountClick, onDashboardClick, onHomeClick, isLoggedIn }: NavbarProps) {
+export default function Navigation({ onLoginClick, onAccountClick, onDashboardClick, onHomeClick, onPremiumClick, isLoggedIn }: NavbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -54,6 +55,7 @@ export default function Navigation({ onLoginClick, onAccountClick, onDashboardCl
     { id: 'features',  icon: Sparkles, label: 'Feature',    sectionId: 'features' },
     { id: 'mind',      icon: Brain,    label: 'Mind',       sectionId: 'mind' },
     { id: 'stats',     icon: Activity, label: 'Progress',   onDashboard: true },
+    ...(isLoggedIn ? [{ id: 'premium', icon: Crown, label: 'Premium', onPremium: true }] : []),
     { id: 'profile',   icon: User,     label: isLoggedIn ? 'Account' : 'Sign In',   isLogin: true },
   ];
 
@@ -63,6 +65,8 @@ export default function Navigation({ onLoginClick, onAccountClick, onDashboardCl
       isLoggedIn ? onAccountClick?.() : onLoginClick?.();
     } else if (item.onDashboard) {   // ← add this
       onDashboardClick?.();
+    } else if (item.onPremium) {
+      onPremiumClick?.();
     } else if (item.sectionId) {
       // Ensure we switch back to landing view if we are on dashboard or another view
       if (onHomeClick) onHomeClick();

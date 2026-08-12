@@ -1,15 +1,26 @@
 // src/components/SignupPage.tsx
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Brain, Eye, EyeOff, User, Mail, Lock, Shield, Cpu, RefreshCw, X } from 'lucide-react';
+import { Brain, Eye, EyeOff, User, Mail, Lock, Shield, Cpu, RefreshCw, X, KeyRound, Send, CheckCircle2, Pencil } from 'lucide-react';
 import { motion, type Variants } from 'framer-motion';
 import { useGoogleLogin } from '@react-oauth/google';
+import * as api from '../services/api';
+import type { UserData } from '../App';
 
 interface SignupPageProps {
-  onSignup:     (data: { name: string; email: string; password: string }) => Promise<void>;
-  onGoogleAuth: (data: { token: string; user: any }) => void;
-  onGoToLogin:  () => void;
-  onClose:      () => void;
+  onAccountVerified: (user: UserData) => void;
+  onGoogleAuth:      (data: { token: string; user: any }) => void;
+  onGoToLogin:       () => void;
+  onClose:           () => void;
+}
+
+const OTP_EXPIRY_SECONDS  = 5 * 60;
+const RESEND_COOLDOWN_SECONDS = 60;
+
+function formatCountdown(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function LineCanvas() {
@@ -76,7 +87,7 @@ function LineCanvas() {
   return <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />;
 }
 
-export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClose }: SignupPageProps) {
+export default function SignupPage({ onAccountVerified, onGoogleAuth, onGoToLogin, onClose }: SignupPageProps) {
   const [name,                setName]                = useState('');
   const [email,               setEmail]               = useState('');
   const [password,            setPassword]            = useState('');
@@ -88,6 +99,38 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
   const [errors, setErrors] = useState<{
     name?: string; email?: string; password?: string; confirmPassword?: string;
   }>({});
+
+  // ── OTP verification step ─────────────────────────────────────────────
+  const [otp,             setOtp]             = useState('');
+  const [otpSent,         setOtpSent]         = useState(false);
+  const [otpEmail,        setOtpEmail]        = useState('');   // the address the current code was sent to
+  const [isSendingOtp,    setIsSendingOtp]    = useState(false);
+  const [otpError,        setOtpError]        = useState<string | null>(null);
+  const [expirySeconds,   setExpirySeconds]   = useState(0);
+  const [resendCooldown,  setResendCooldown]  = useState(0);
+
+  const isExpired = otpSent && expirySeconds <= 0;
+
+  // Tick both countdowns once a second while a code is outstanding.
+  useEffect(() => {
+    if (!otpSent) return;
+    const id = setInterval(() => {
+      setExpirySeconds((s) => Math.max(0, s - 1));
+      setResendCooldown((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [otpSent]);
+
+  // Editing the email after a code was sent invalidates that code's target —
+  // fall back to the "send" state rather than let them verify against a
+  // code that was mailed to a different address.
+  useEffect(() => {
+    if (otpSent && email !== otpEmail) {
+      setOtpSent(false);
+      setOtp('');
+      setOtpError(null);
+    }
+  }, [email, otpSent, otpEmail]);
 
   const getPasswordStrength = (pass: string) => {
     if (!pass) return { score: 0, label: '', color: '' };
@@ -107,10 +150,7 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
 
   const strength = getPasswordStrength(password);
 
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setServerError(null);
-
+  const validateForm = (): boolean => {
     const newErrors: typeof errors = {};
     if (!name.trim())                      newErrors.name = 'Full name is required';
     if (!email)                            newErrors.email = 'Email address is required';
@@ -120,18 +160,72 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
     if (!confirmPassword)                  newErrors.confirmPassword = 'Please confirm your password';
     else if (password !== confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
 
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors);
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  // Attached to the Send/Resend button next to the OTP field.
+  // First click: validates the whole form, creates the (unverified) account,
+  // and emails a code. Later clicks (once cooling down has elapsed): asks
+  // the backend to invalidate the old code and send a fresh one.
+  const handleSendCode = async () => {
+    setServerError(null);
+    setOtpError(null);
+
+    if (!otpSent) {
+      if (!validateForm()) return;
+      setIsSendingOtp(true);
+      try {
+        await api.signup({ name, email, password });
+        setOtpEmail(email);
+        setOtpSent(true);
+        setOtp('');
+        setExpirySeconds(OTP_EXPIRY_SECONDS);
+        setResendCooldown(RESEND_COOLDOWN_SECONDS);
+      } catch (err: any) {
+        setServerError(err.message || 'Could not send verification code — please try again');
+      } finally {
+        setIsSendingOtp(false);
+      }
       return;
     }
 
-    setErrors({});
-    setIsSubmitting(true);
-
+    // Resend
+    setIsSendingOtp(true);
     try {
-      await onSignup({ name, email, password });
+      await api.resendOtp({ email });
+      setOtp('');
+      setExpirySeconds(OTP_EXPIRY_SECONDS);
+      setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err: any) {
-      setServerError(err.message || 'Sign up failed — please try again');
+      setOtpError(err.message || 'Could not resend code — please try again');
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  // Lets them step back and edit name/email/password after a code was sent,
+  // without losing what they'd already typed.
+  const handleEditDetails = () => {
+    setOtpSent(false);
+    setOtp('');
+    setOtpError(null);
+  };
+
+  // The main form submit — only ever reachable once a 6-digit code has been
+  // entered (the button is disabled otherwise). This is the actual
+  // "verify the code and finish creating the account" step.
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otpSent || otp.length !== 6) return;
+
+    setOtpError(null);
+    setIsSubmitting(true);
+    try {
+      const user = await api.verifyOtp({ email, otp });
+      onAccountVerified(user);
+    } catch (err: any) {
+      setOtpError(err.message || 'Verification failed — please try again');
       setIsSubmitting(false);
     }
   };
@@ -284,7 +378,8 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
               <User className="w-4 h-4" />
             </div>
             <input type="text" placeholder="Marcus Aurelius" value={name} onChange={(e) => setName(e.target.value)}
-              className="w-full h-10 pl-10 pr-4 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300" />
+              disabled={otpSent}
+              className="w-full h-10 pl-10 pr-4 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300 disabled:opacity-50" />
           </div>
         </motion.div>
 
@@ -299,8 +394,64 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
               <Mail className="w-4 h-4" />
             </div>
             <input type="email" placeholder="reclaim@studiction.com" value={email} onChange={(e) => setEmail(e.target.value)}
-              className="w-full h-10 pl-10 pr-4 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300" />
+              disabled={otpSent}
+              className="w-full h-10 pl-10 pr-4 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300 disabled:opacity-50" />
           </div>
+        </motion.div>
+
+        {/* Email verification (OTP) */}
+        <motion.div variants={itemVariants} className="space-y-1 md:col-span-2">
+          <div className="flex justify-between items-center px-1">
+            <label className="text-zinc-400 text-[11px] font-bold uppercase tracking-widest">Verification Code</label>
+            <div className="flex items-center gap-2">
+              {otpSent && !isExpired && (
+                <span className="text-zinc-500 text-[11px] font-medium tabular-nums">Expires in {formatCountdown(expirySeconds)}</span>
+              )}
+              {otpSent && (
+                <button type="button" onClick={handleEditDetails}
+                  className="flex items-center gap-1 text-zinc-500 hover:text-zinc-300 text-[11px] font-medium transition-colors">
+                  <Pencil className="w-3 h-3" /> Edit details
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <div className="relative group flex-1">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500 group-focus-within:text-[#6c63ff] transition-colors duration-200">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <input
+                type="text" inputMode="numeric" placeholder={otpSent ? '6-digit code' : 'Send a code to verify your email'}
+                value={otp} maxLength={6} disabled={!otpSent || isExpired}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full h-10 pl-10 pr-4 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm tracking-[0.3em] focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300 disabled:opacity-50"
+              />
+            </div>
+            <motion.button
+              type="button" onClick={handleSendCode}
+              disabled={isSendingOtp || (otpSent && resendCooldown > 0 && !isExpired)}
+              whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+              className="h-10 px-4 flex items-center justify-center gap-1.5 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] hover:border-[#48cfad]/60 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-zinc-300 text-xs font-bold uppercase tracking-wider transition-all duration-200 whitespace-nowrap cursor-pointer"
+            >
+              {isSendingOtp ? (
+                <RefreshCw className="animate-spin h-3.5 w-3.5" />
+              ) : otpSent ? (
+                <Send className="w-3.5 h-3.5" />
+              ) : (
+                <Send className="w-3.5 h-3.5" />
+              )}
+              {otpSent
+                ? (resendCooldown > 0 && !isExpired ? `Resend (${resendCooldown}s)` : 'Resend')
+                : 'Send Code'}
+            </motion.button>
+          </div>
+          {otpError && <p className="text-rose-400 text-[11px] font-medium px-1">{otpError}</p>}
+          {isExpired && !otpError && <p className="text-amber-400 text-[11px] font-medium px-1">Code expired — tap resend to get a new one.</p>}
+          {otpSent && !isExpired && !otpError && otp.length === 6 && (
+            <p className="text-[#48cfad] text-[11px] font-medium px-1 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Ready to verify — hit Create Account below
+            </p>
+          )}
         </motion.div>
 
         {/* Password */}
@@ -314,7 +465,8 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
               <Lock className="w-4 h-4" />
             </div>
             <input type={showPassword ? 'text' : 'password'} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)}
-              className="w-full h-10 pl-10 pr-11 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300" />
+              disabled={otpSent}
+              className="w-full h-10 pl-10 pr-11 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300 disabled:opacity-50" />
             <button type="button" onClick={() => setShowPassword(!showPassword)}
               className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-zinc-400 hover:text-white transition-colors duration-200">
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -349,7 +501,8 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
               <Lock className="w-4 h-4" />
             </div>
             <input type={showConfirmPassword ? 'text' : 'password'} placeholder="••••••••" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full h-10 pl-10 pr-11 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300" />
+              disabled={otpSent}
+              className="w-full h-10 pl-10 pr-11 bg-[#060611]/90 border border-[rgba(255,255,255,0.06)] focus:border-[#6c63ff]/80 rounded-xl text-white placeholder-zinc-600 text-sm focus:ring-4 focus:ring-[#6c63ff]/10 outline-none transition-all duration-300 disabled:opacity-50" />
             <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)}
               className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-zinc-400 hover:text-white transition-colors duration-200">
               {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -359,14 +512,16 @@ export default function SignupPage({ onSignup, onGoogleAuth, onGoToLogin, onClos
 
         {/* Submit */}
         <motion.div variants={itemVariants} className="pt-1 md:col-span-2">
-          <motion.button type="submit" whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} disabled={isSubmitting}
-            className="w-full h-11 bg-gradient-to-r from-[#6c63ff] to-[#48cfad] rounded-xl text-white font-semibold tracking-wider uppercase text-[13px] shadow-[0_0_25px_rgba(108,99,255,0.22)] hover:shadow-[0_0_35px_rgba(108,99,255,0.45)] transition-all cursor-pointer flex items-center justify-center">
+          <motion.button type="submit"
+            whileHover={{ scale: otpSent && otp.length === 6 ? 1.02 : 1 }} whileTap={{ scale: otpSent && otp.length === 6 ? 0.98 : 1 }}
+            disabled={isSubmitting || !otpSent || otp.length !== 6 || isExpired}
+            className="w-full h-11 bg-gradient-to-r from-[#6c63ff] to-[#48cfad] rounded-xl text-white font-semibold tracking-wider uppercase text-[13px] shadow-[0_0_25px_rgba(108,99,255,0.22)] hover:shadow-[0_0_35px_rgba(108,99,255,0.45)] transition-all cursor-pointer flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none">
             {isSubmitting ? (
               <div className="flex items-center space-x-2">
                 <RefreshCw className="animate-spin h-5 w-5 text-white" />
                 <span>PREPARING PORTAL...</span>
               </div>
-            ) : 'BEGIN YOUR JOURNEY →'}
+            ) : otpSent ? 'VERIFY & BEGIN YOUR JOURNEY →' : 'ENTER CODE TO CONTINUE'}
           </motion.button>
         </motion.div>
       </form>

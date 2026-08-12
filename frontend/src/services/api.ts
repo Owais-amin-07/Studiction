@@ -56,6 +56,9 @@ export interface UserData {
   username:   string;
   joinedDate: string;
   goal?:      string;
+  isPremium?:        boolean;
+  premiumPlan?:       'monthly' | 'yearly' | null;
+  premiumExpiresAt?:  string | null;
 }
 
 export interface DiagResult {
@@ -76,20 +79,46 @@ interface AuthResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Create a new account.
- * Stores JWT in localStorage. Returns user data.
+ * Step 1 of signup: creates the account in an UNVERIFIED state and emails a
+ * 6-digit OTP. No token is issued yet — call verifyOtp() to finish signing up.
  */
 export async function signup(payload: {
   name:     string;
   email:    string;
   password: string;
+}): Promise<{ message: string; email: string }> {
+  return request<{ message: string; email: string }>('/auth/signup', {
+    method: 'POST',
+    body:   JSON.stringify(payload),
+  });
+}
+
+/**
+ * Step 2 of signup: submits the OTP the user received by email.
+ * On success, stores the JWT and returns the now-verified user — this is
+ * the point the account actually becomes usable.
+ */
+export async function verifyOtp(payload: {
+  email: string;
+  otp:   string;
 }): Promise<UserData> {
-  const data = await request<AuthResponse>('/auth/signup', {
+  const data = await request<AuthResponse>('/auth/verify-otp', {
     method: 'POST',
     body:   JSON.stringify(payload),
   });
   setToken(data.token);
   return data.user;
+}
+
+/**
+ * Requests a new OTP for a pending (unverified) signup, invalidating the
+ * previous code. Subject to the backend's cooldown/resend-limit rules.
+ */
+export async function resendOtp(payload: { email: string }): Promise<{ message: string }> {
+  return request<{ message: string }>('/auth/resend-otp', {
+    method: 'POST',
+    body:   JSON.stringify(payload),
+  });
 }
 
 /**
@@ -180,6 +209,111 @@ export async function callAI(payload: {
     method: 'POST',
     body:   JSON.stringify(payload),
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Premium API — simulated payment layer (see backend/models/Payment.js)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PremiumPlan {
+  id:       'monthly' | 'yearly';
+  name:     string;
+  amount:   number;
+  currency: string;
+  days:     number;
+}
+
+export interface PaymentRecord {
+  id:             string;
+  planId:         string;
+  planName:       string;
+  amount:         number;
+  currency:       string;
+  status:         'succeeded' | 'failed';
+  simulatedTxnId: string;
+  createdAt:      string;
+}
+
+export async function getPremiumPlans(): Promise<PremiumPlan[]> {
+  const data = await request<{ plans: PremiumPlan[] }>('/premium/plans');
+  return data.plans;
+}
+
+/**
+ * simulateFailure is an explicit, deliberate test flag — never random —
+ * so the failure UI can be demoed on purpose without risking an
+ * unpredictable failure during a real demo.
+ *
+ * Doesn't use the shared request() helper: a "failed" simulated payment is
+ * a valid 402 response with a real payment record attached (so the UI can
+ * still show the simulated transaction id on a failure), not just an error
+ * string — request() would discard everything but the message on a non-2xx
+ * response.
+ */
+export async function purchasePremium(payload: {
+  planId: 'monthly' | 'yearly';
+  simulateFailure?: boolean;
+}): Promise<{ payment: PaymentRecord; user: UserData | null; error: string | null }> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/premium/purchase`, {
+    method:  'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+
+  if (res.status === 402 && data.payment) {
+    // Expected simulated failure — not a thrown error.
+    return { payment: data.payment, user: null, error: data.error || 'Payment failed' };
+  }
+  if (!res.ok) {
+    throw new Error(data.error || 'Something went wrong');
+  }
+  return { payment: data.payment, user: data.user, error: null };
+}
+
+export async function getPaymentHistory(): Promise<PaymentRecord[]> {
+  const data = await request<{ payments: PaymentRecord[] }>('/premium/history');
+  return data.payments;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Premium Requests — the AI pre-chat summary handed to a doctor
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PremiumRequestReport {
+  mainConcern: string;
+  keyDetails:  string;
+  urgency:     'low' | 'moderate' | 'high';
+  summary:     string;
+}
+
+export interface PremiumRequestRecord {
+  id:        string;
+  status:    'pending' | 'accepted' | 'declined' | 'completed';
+  report:    PremiumRequestReport;
+  sessionEndsAt?: string | null;
+  doctor?: { name: string; specialization: string; expertise: string; experience: string; bio: string } | null;
+  createdAt: string;
+}
+
+export async function submitPremiumRequest(payload: {
+  report: PremiumRequestReport;
+  conversationHistory: { role: 'user' | 'assistant'; content: string }[];
+}): Promise<PremiumRequestRecord> {
+  const data = await request<{ request: PremiumRequestRecord }>('/premium-requests', {
+    method: 'POST',
+    body:   JSON.stringify(payload),
+  });
+  return data.request;
+}
+
+export async function getMyPremiumRequest(): Promise<PremiumRequestRecord | null> {
+  const data = await request<{ request: PremiumRequestRecord | null }>('/premium-requests/mine');
+  return data.request;
 }
 
 

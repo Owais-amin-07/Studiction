@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Download, CheckCircle2, Circle, ChevronRight, Flame, Brain, Shield, AlertTriangle, Zap } from 'lucide-react';
+import { Download, CheckCircle2, Circle, ChevronRight, Flame, Brain, Shield, AlertTriangle, Zap, Stethoscope } from 'lucide-react';
 import * as api from '../services/api';
+import { Sparkles, ArrowLeft } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ interface DashboardProps {
   conversationHistory?: { role: string; content: string }[];
   userName?:           string;
   userEmail?:          string;
+  onOpenRecoveryHub?: () => void;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -379,6 +381,41 @@ function ThirtyDayPlan({ plan, tier }: { plan: string; tier: Tier }) {
   );
 }
 
+
+
+/* ── Recovery Hub Entry Card ── */
+<motion.div
+  initial={{ opacity: 0, y: 10 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ delay: 1, duration: 0.6 }}
+  className="mb-4"
+>
+  <motion.button
+    onClick={() => setView('recovery-hub')}  // ADD: You'll need to pass this from parent
+    whileHover={{ scale: 1.02 }}
+    whileTap={{ scale: 0.98 }}
+    className="w-full rounded-2xl border border-emerald-500/20 backdrop-blur-md p-6 text-left group"
+    style={{
+      background: 'linear-gradient(135deg, rgba(72,207,173,0.08), rgba(72,207,173,0.02))',
+      boxShadow: '0 0 40px rgba(72,207,173,0.1), inset 0 1px 0 rgba(255,255,255,0.06)',
+    }}
+  >
+    <div className="flex items-center gap-4">
+      <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+        style={{ background: 'rgba(72,207,173,0.15)', border: '1px solid rgba(72,207,173,0.3)' }}>
+        <Sparkles size={24} style={{ color: '#48cfad' }} />
+      </div>
+      <div className="flex-1">
+        <h3 className="text-lg font-semibold text-white mb-1">Recovery Hub</h3>
+        <p className="text-sm text-zinc-400">Games, videos, challenges & more for your wellness journey</p>
+      </div>
+      <ArrowLeft size={20} className="text-zinc-600 group-hover:text-emerald-400 transition-colors rotate-180" />
+    </div>
+  </motion.button>
+</motion.div>
+
+
+
 // ─── PDF Download ─────────────────────────────────────────────────────────────
 
 async function downloadPDF(profile: AIProfile, userName?: string, userEmail?: string) {
@@ -533,6 +570,54 @@ async function downloadPDF(profile: AIProfile, userName?: string, userEmail?: st
   doc.save('studiction-recovery-profile.pdf');
 }
 
+
+
+
+
+
+
+
+async function downloadCarePlanPDF(plan: { content: string; sentAt: string; doctorName?: string }, userName?: string, userEmail?: string) {
+  const { jsPDF } = await import('jspdf');
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210, margin = 20;
+
+  doc.setFillColor(10, 12, 18); doc.rect(0, 0, W, 297, 'F');
+  doc.setFillColor(30, 35, 45); doc.rect(0, 0, W, 35, 'F');
+  doc.setFontSize(20); doc.setTextColor(72, 207, 173); doc.text('STUDICTION', margin, 15);
+  doc.setFontSize(9); doc.setTextColor(120, 120, 140);
+  doc.text("Doctor's Recommendation / Care Plan", margin, 22);
+  doc.text(`Sent: ${new Date(plan.sentAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`, margin, 28);
+  if (userName || userEmail) {
+    doc.setFontSize(10); doc.setTextColor(220, 220, 240);
+    if (userName) doc.text(userName, W - margin, 15, { align: 'right' });
+    doc.setFontSize(8); doc.setTextColor(140, 140, 160);
+    if (userEmail) doc.text(userEmail, W - margin, 21, { align: 'right' });
+  }
+
+  let y = 50;
+  if (plan.doctorName) {
+    doc.setFontSize(10); doc.setTextColor(220, 220, 240);
+    doc.text(`From: ${plan.doctorName}`, margin, y);
+    y += 8;
+  }
+  doc.setDrawColor(72, 207, 173); doc.setLineWidth(0.3);
+  doc.line(margin, y, W - margin, y);
+  y += 10;
+
+  doc.setFontSize(11); doc.setTextColor(220, 220, 230);
+  const lines = doc.splitTextToSize(plan.content, W - margin * 2);
+  for (const line of lines) {
+    if (y > 270) { doc.addPage(); doc.setFillColor(10, 12, 18); doc.rect(0, 0, W, 297, 'F'); y = 20; }
+    doc.text(line, margin, y);
+    y += 6;
+  }
+
+  doc.setFontSize(7); doc.setTextColor(80, 80, 100);
+  doc.text('This care plan is behavioral guidance from your Studiction doctor session — not a medical prescription.', margin, 289);
+  doc.save('studiction-care-plan.pdf');
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Dashboard({
@@ -551,6 +636,26 @@ export default function Dashboard({
   const [isLoading,  setIsLoading]  = useState(true);
   const [pdfLoading, setPdfLoading] = useState(false);
   const generated = useRef(false);
+
+
+    const [carePlan, setCarePlan] = useState<{ content: string; sentAt: string; doctorName?: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getMyPremiumRequest()
+      .then((req: any) => {
+        if (!active) return;
+        if (req && req.status === 'completed' && req.recommendation?.content) {
+          setCarePlan({
+            content: req.recommendation.content,
+            sentAt: req.recommendation.sentAt,
+            doctorName: req.doctor?.name,
+          });
+        }
+      })
+      .catch(() => { /* no request yet — card simply stays hidden */ });
+    return () => { active = false; };
+  }, []);
 
   // ── Generate full profile via Groq ─────────────────────────────────────────
 
@@ -837,6 +942,53 @@ if (!isLoading && !hasResult) {
         <div className="mb-6">
           <ThirtyDayPlan plan={profile.thirtyDayPlan} tier={tier} />
         </div>
+
+
+
+
+                {/* ── Doctor's Care Plan — only for completed doctor chats ── */}
+        {carePlan && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7, ease: [0.23, 1, 0.32, 1] }}
+            className="rounded-2xl border border-white/8 backdrop-blur-md p-5 mb-4"
+            style={{
+              background: 'linear-gradient(135deg, rgba(72,207,173,0.07), rgba(255,255,255,0.02))',
+              boxShadow: '0 0 40px rgba(72,207,173,0.08), inset 0 1px 0 rgba(255,255,255,0.08)',
+            }}
+          >
+            <div className="flex items-center gap-2.5 mb-4">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: 'rgba(72,207,173,0.12)', border: '1px solid rgba(72,207,173,0.3)' }}>
+                <Stethoscope size={16} style={{ color: '#48cfad' }} />
+              </div>
+              <div>
+                <p className="text-xs text-zinc-400 uppercase tracking-widest font-medium">Doctor's Care Plan</p>
+                <p className="text-[10px] text-zinc-600 mt-0.5">
+                  {carePlan.doctorName ? `${carePlan.doctorName} · ` : ''}
+                  {new Date(carePlan.sentAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-zinc-300 leading-relaxed mb-4 border-l-2 pl-4 py-1"
+              style={{ borderColor: 'rgba(72,207,173,0.4)' }}>
+              {carePlan.content}
+            </p>
+            <button
+              type="button"
+              onClick={() => downloadCarePlanPDF(carePlan, userName, userEmail)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all"
+              style={{
+                background: 'rgba(72,207,173,0.1)',
+                border: '1px solid rgba(72,207,173,0.4)',
+                color: '#48cfad',
+              }}
+            >
+              <Download size={13} /> Download Care Plan PDF
+            </button>
+          </motion.div>
+        )}
 
         {/* ── PDF Download button ── */}
         <motion.div

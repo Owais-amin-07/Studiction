@@ -16,7 +16,7 @@ interface AITurn {
   options: string[];
 }
 
-interface DiagnosticResult {
+export interface DiagnosticResult {
   tier:    'low' | 'moderate' | 'high';
   stage:   'pre-contemplation' | 'contemplation' | 'preparation' | 'action' | 'maintenance';
   score:   number;
@@ -26,22 +26,60 @@ interface DiagnosticResult {
 }
 
 interface DiagnosticChatProps {
-  onComplete: (result: DiagnosticResult) => void;
+  onComplete:       (result: DiagnosticResult) => void;
+  durationMinutes?: number;              // 5 | 10 | 15 | 20 — how many questions get asked scales with this
+  mood?:            'robotic' | 'doctor'; // 'doctor' (Real Doctor) is reserved for a future premium unlock
+  fixedExchangeTarget?: number;          // overrides the duration-derived target — used by the short premium pre-chat
+  variant?:         'standard' | 'premium'; // premium swaps the accent theme to gold; no behavior change otherwise
+}
+
+// Roughly 1.2 questions per selected minute (tuned locally) — e.g. 10 min
+// (Standard) → 12 questions.
+function targetExchangesFor(durationMinutes: number): number {
+  return Math.max(3, Math.round(durationMinutes * 1.2));
 }
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are Sage — a warm recovery companion inside Studiction. You talk like a caring friend, not a doctor or a form.
+const PERSONA_INTRO: Record<'robotic' | 'doctor', string> = {
+  robotic: `You are Studiction's clinical assessment engine — precise, structured, and efficient. Do not adopt a name or persona. Calm, patient, curious. Never judgmental, never dramatic, never preachy, never rushes the user. Use short, neutral, professional sentences — no casual warmth, no "friend" language, no emotional filler. Acknowledge each answer factually and briefly before moving on. You talk like an experienced, focused intake clinician — not a chatbot, not a script.`,
+  // Reserved for the future "Real Doctor" premium tier — not reachable from the UI yet.
+  doctor: `You are Sage — a warm recovery companion inside Studiction. You talk like a caring, experienced counselor, not a doctor or a form. Calm, patient, curious. Never judgmental, never dramatic, never preachy, never rushes the user. You talk naturally — not scripted, not like an interviewer, not like a generic chatbot.`,
+};
 
-STRICT RULES:
+function buildSystemPrompt(mood: 'robotic' | 'doctor', targetExchanges: number): string {
+  return `${PERSONA_INTRO[mood]}
+
+HOW YOU THINK — this matters more than any rule below:
+Don't think "I must ask question 7." Think "what do I still not understand about this person's situation, and what's the best next question to close that gap?" Let each question follow from what's still unclear, not from a fixed script. Two people can end up in very different places by the ${targetExchanges}-ish exchange mark, and that's fine — depth matters more than covering every topic evenly.
+
+SAFETY — HIGHEST PRIORITY, overrides every other rule in this prompt, including the completion/exchange-count rule below:
+If the user expresses thoughts of self-harm, suicide, wanting to die, or is clearly in acute crisis: STOP the diagnostic immediately, regardless of exchange count. Do not ask another question. Do not calculate or output a score or a STUDICTION_RESULT line. Respond with genuine warmth, acknowledge what they shared without minimizing it, and gently encourage them to reach out right now to a trusted person, a mental health professional, or their local emergency/crisis service. Do not diagnose, do not frame this as part of the addiction assessment, and do not resume scoring later in this same conversation. Format: {"message": "your caring, supportive response", "options": []}.
+
+FORMAT — STRICT:
 - ALWAYS respond with ONLY raw JSON — no markdown, no backticks, nothing outside JSON.
-- Format: {"message": "your question", "options": ["option1", "option2", "option3", "option4"]}
-- ONE question per turn. ONE question mark only. Never ask two things at once.
-- EXACTLY 10 TO 12 WORDS in your question. Hard limit. Count every single word. Rewrite until it fits.
-- Use simple everyday English. No big words. A 14-year-old should understand easily.
-- Always acknowledge what the user just said before your next question. Show you listened.
-- Your options must directly follow from what the user just answered. Never repeat options from earlier turns.
-- Options are first-person, max 8 words each: "I feel...", "It makes me...", "I usually..."
+- Shape: {"message": "your question", "options": ["option1", "option2", "option3", "option4"]}
+- ONE question per turn, ONE question mark. Never ask two things at once.
+- Usually 8 to 18 words — whatever reads naturally in the language you're using. No forced padding, no awkward trimming to hit a number.
+- Simple, everyday language. A 14-year-old should understand easily.
+- Always acknowledge what the user just said before your next question — vary it ("That sounds frustrating," "You mentioned...", "Earlier you said...", "It sounds like...") rather than a flat "I understand" every time.
+- Options must directly follow from what the user just answered. Never repeat options from earlier turns. Never re-ask something already answered unless you genuinely need to clarify it.
+- Options are first-person, max 8 words each, same language as your question: "I feel...", "It makes me...", "I usually..."
+
+LANGUAGE — auto-detect, every turn:
+Match whatever the user just wrote in — English, Urdu, or mixed/code-switched Roman Urdu. Switch naturally the moment they switch. No translation, no announcing the switch, no asking which language they'd prefer. Example: user writes "Main sara din Instagram chalata rehta hoon" → you respond in the same Roman Urdu register, e.g. "Main samajh sakta hoon. Instagram sab se zyada kis waqt use hota hai?" Keep the JSON format and field names in English regardless — only the message/option text changes language.
+
+BOUNDARIES:
+If asked something off-topic, don't say "I can't discuss that" — instead: "That's a good question. Right now I'd like to stay focused on understanding your habits so I can support you better." Then continue. Allowed territory: addiction, habits, sleep, stress, cravings, recovery, emotions, relationships, work, study. Redirect anything else this way.
+
+RESTRICTIONS:
+Never diagnose a medical condition, never prescribe or suggest medication, never claim to replace a real doctor or therapist, never encourage risky behavior.
+
+REMEMBER AS YOU GO:
+Track what they've told you — addiction type, specific app or cigarettes/day, sleep impact, emotions named, family/work/study mentions, past attempts, goals — and use it. If they said "I'm ashamed" earlier, you can return to it later: "Earlier you mentioned feeling ashamed — has that made it harder to ask for help?" Never make them repeat themselves.
+
+CONVERSATION SHAPE (a loose arc, not a checklist — let it happen naturally):
+Rapport → understand the addiction itself → explore emotions around it → explore its impact → gauge readiness to change → close. The user should never feel these as separate "phases."
 
 STEP 1 — FIRST MESSAGE (always ask this before anything else):
 Ask what's mainly been on their mind, offering both digital and physical options.
@@ -51,6 +89,7 @@ Based on their answer, follow DIGITAL TRACK, NICOTINE TRACK, or touch both light
 === DIGITAL TRACK ===
 WHAT TO EXPLORE naturally — follow the conversation, not this order:
 Which exact app or device takes most time | How many hours a day roughly | How it affects sleep | Impact on work study or relationships | How they feel without their phone | Past attempts to stop | Physical effects like headaches or eye strain | How ready they feel to change
+If they've already told you something (e.g. "I use TikTok 9 hours"), don't ask "which app" again — go deeper instead: "What usually keeps you scrolling that long?"
 
 DIGITAL SCORING (pick one only):
 DAILY TIME: Under 2h=5 | 2-3h=10 | 3-5h=18 | 5-7h=26 | 7-9h=32 | Over 9h=38
@@ -61,7 +100,7 @@ PAST QUIT ATTEMPTS: Never needed=2 | Once, week+=4 | Once, relapsed days=7 | Man
 PHYSICAL SYMPTOMS: None=0 | Occasional eye strain=2 | Regular headaches/neck pain=5
 
 === NICOTINE TRACK ===
-Lightly informed by the Fagerström Test for Nicotine Dependence, delivered in Sage's same warm conversational style. Explore naturally:
+Lightly informed by the Fagerström Test for Nicotine Dependence, delivered in the same conversational style. Explore naturally:
 Time from waking to first cigarette | Cigarettes smoked per day | Difficulty not smoking in restricted places | How hard it'd be to give up the first morning cigarette | Past attempts to quit or cut back
 
 NICOTINE SCORING (pick one only):
@@ -71,26 +110,26 @@ DIFFICULTY IN RESTRICTED PLACES: No=0 | Yes=9
 HARDEST TO GIVE UP: Any other=0 | First morning one=9
 PAST QUIT ATTEMPTS: reuse DIGITAL TRACK point values above
 
-SCORING — calculate only at the end:
+SCORING — calculate only at the end, from the tables above only. Never adjust a score based on how you feel about someone's situation — the tables are the score:
 Add all selected points from whichever track(s) were actually explored. If both tracks were lightly touched, average the digital total and nicotine total into one final score.
 tier: low if 0 to 35 | moderate if 36 to 65 | high if 66 to 100
-stage: pre-contemplation | contemplation | preparation | action | maintenance — based on how ready they said they are
-summary: ONE warm sentence. Must name their specific app/situation OR specific smoking pattern. Not generic.
+stage: pre-contemplation | contemplation | preparation | action | maintenance — base this on the pattern of what they said about readiness across the whole conversation, not just their literal last word on it (e.g. someone who repeatedly said "I want to quit," "I've tried before," "I'm ready" is in preparation even if one answer sounded uncertain)
+summary: 1-2 sentences, specific and personalized — name their actual app/situation or smoking pattern, their biggest trigger or consequence if they shared one, and their readiness. Not generic. E.g. "Your Instagram scrolling mainly happens during stressful evenings, affecting your sleep, yet you've shown genuine interest in changing this habit" — not "You spend too much time online."
 addictionType: "digital" | "nicotine" | "both" — whichever track(s) were actually explored
 
-COMPLETION — MANDATORY when exchange count reaches 8 or higher:
-DO NOT ask another question. Instead write a warm one-sentence closing — like a caring friend saying the journey is starting.
-The closing must have NO question mark.
+COMPLETION — when exchange count reaches ${targetExchanges} or so (unless SAFETY above applies):
+DO NOT ask another question. Instead write a warm one-sentence closing that references something specific from the conversation — not generic. The closing must have NO question mark.
 Use exactly this format: {"message": "your warm closing sentence here", "options": []}
-Example closing: "You have taken the first step — your recovery journey starts now."
+Example: "Thank you for being honest about the late nights on TikTok — understanding that is the first step, and you've already taken it."
 Then on a NEW LINE write exactly:
 STUDICTION_RESULT:{"tier":"___","stage":"___","score":___,"summary":"___","addictionType":"___"}
 
-Score must be the real arithmetic sum (or average, if both tracks touched). Never a guess. Never a round number like 50 or 60 unless the math actually gives that.`;
+Score must be the real arithmetic sum (or average, if both tracks touched) from the tables above. Never a guess. Never a round number like 50 or 60 unless the math actually gives that.`;
+}
 
 // ─── Sage Avatar ──────────────────────────────────────────────────────────────
 
-function SageAvatar() {
+function SageAvatar({ accentColor = '#48cfad' }: { accentColor?: string }) {
   return (
     <div
       className="flex-shrink-0 mt-1"
@@ -98,9 +137,9 @@ function SageAvatar() {
         width:         '32px',
         height:        '32px',
         borderRadius:  '50%',
-        background:    'linear-gradient(135deg, rgba(72,207,173,0.18), rgba(108,99,255,0.18))',
-        border:        '1px solid rgba(72,207,173,0.45)',
-        boxShadow:     '0 0 14px rgba(72,207,173,0.2)',
+        background:    `linear-gradient(135deg, ${accentColor}30, rgba(108,99,255,0.18))`,
+        border:        `1px solid ${accentColor}73`,
+        boxShadow:     `0 0 14px ${accentColor}33`,
         display:       'flex',
         alignItems:    'center',
         justifyContent:'center',
@@ -109,9 +148,9 @@ function SageAvatar() {
     >
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
         <path d="M12 3C9.5 3 7.5 4.5 7 6.5C5.5 6.8 4 8.2 4 10C4 11.2 4.6 12.3 5.5 13C5.2 13.6 5 14.3 5 15C5 17.2 6.8 19 9 19H15C17.2 19 19 17.2 19 15C19 14.3 18.8 13.6 18.5 13C19.4 12.3 20 11.2 20 10C20 8.2 18.5 6.8 17 6.5C16.5 4.5 14.5 3 12 3Z"
-          stroke="#48cfad" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          stroke={accentColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
         <path d="M12 3V19M9 8C9 8 10 9 12 9S15 8 15 8M8 13C8 13 9.5 14 12 14S16 13 16 13"
-          stroke="#48cfad" strokeWidth="1" strokeLinecap="round" opacity="0.5"/>
+          stroke={accentColor} strokeWidth="1" strokeLinecap="round" opacity="0.5"/>
       </svg>
     </div>
   );
@@ -119,7 +158,14 @@ function SageAvatar() {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
+export default function DiagnosticChat({
+  onComplete, durationMinutes = 10, mood = 'robotic', fixedExchangeTarget, variant = 'standard',
+}: DiagnosticChatProps) {
+  const targetExchanges = fixedExchangeTarget ?? targetExchangesFor(durationMinutes);
+  const isPremiumTheme  = variant === 'premium';
+  const accentFrom = isPremiumTheme ? '#f0b429' : '#6c63ff';
+  const accentTo   = isPremiumTheme ? '#f59e0b' : '#48cfad';
+
   const [messages,       setMessages]      = useState<Message[]>([]);
   const [currentOptions, setOptions]       = useState<string[]>([]);
   const [isLoading,      setIsLoading]     = useState(false);
@@ -159,7 +205,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
         max_tokens:  600,
         temperature: 0.85,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: buildSystemPrompt(mood, targetExchanges) },
           ...currentConversation,
         ],
       });
@@ -229,7 +275,12 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
       const aiMsg: Message = { id: `ai-${Date.now()}`, sender: 'ai', text: aiTurn.message };
       setMessages(prev => [...prev, aiMsg]);
       setConversation(prev => [...prev, { role: 'assistant', content: raw }]);
-      setOptions(aiTurn.options?.slice(0, 4) || []);
+      const newOptions = aiTurn.options?.slice(0, 4) || [];
+      setOptions(newOptions);
+      // If the model returned no options outside of completion (e.g. the
+      // SAFETY response), make sure the user can still type back immediately —
+      // don't leave them stuck behind the exchange-count-gated mode toggle.
+      if (newOptions.length === 0) setInputMode('text');
 
     } catch (err) {
       console.error('Groq error:', err);
@@ -245,7 +296,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
       isSubmittingRef.current = false;
       setIsLoading(false);
     }
-  }, [onComplete]);
+  }, [onComplete, mood, targetExchanges]);
 
   // ── Initialize with targeted opener ────────────────────────────────────────
 
@@ -268,7 +319,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
 
     const newCount = exchangeCount + 1;
 
-    const messageWithCount = newCount >= 8
+    const messageWithCount = newCount >= targetExchanges
       ? `${answer.trim()}\n\n[Exchange count: ${newCount} — please complete the assessment now]`
       : `${answer.trim()}\n\n[Exchange count: ${newCount}]`;
 
@@ -286,7 +337,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
     const newConversation = [...conversation, { role: 'user' as const, content: messageWithCount }];
     setConversation(newConversation);
     callGroq(newConversation, newCount);
-  }, [isLoading, isComplete, exchangeCount, conversation, callGroq]);
+  }, [isLoading, isComplete, exchangeCount, conversation, callGroq, targetExchanges]);
 
   // ── Voice ──────────────────────────────────────────────────────────────────
 
@@ -327,7 +378,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
         transition={{ duration: 0.8 }}
         className="relative z-10 flex items-center justify-between px-6 pt-20 pb-3"
       >
-        {/* Left — Sage identity */}
+        {/* Left — Assistant identity (varies with mood) */}
         <div className="flex items-center gap-3">
           <div style={{
             width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
@@ -342,14 +393,14 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
             </svg>
           </div>
           <div>
-            <p className="text-xs text-zinc-300 font-semibold tracking-wide">Sage</p>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-widest">Recovery Companion</p>
+            <p className="text-xs text-zinc-300 font-semibold tracking-wide">{isPremiumTheme ? 'Premium Intake' : mood === 'doctor' ? 'Sage' : 'Studiction AI'}</p>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-widest">{isPremiumTheme ? 'Preparing your doctor handoff' : mood === 'doctor' ? 'Recovery Companion' : 'Structured Assessment'}</p>
           </div>
         </div>
 
         {/* Right — Progress dots */}
         <div className="flex items-center gap-1.5">
-          {Array.from({ length: 9 }).map((_, i) => (
+          {Array.from({ length: targetExchanges + 1 }).map((_, i) => (
             <motion.div
               key={i}
               className="rounded-full transition-all duration-500"
@@ -357,9 +408,9 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
                 width:      i < exchangeCount ? '20px' : '6px',
                 height:     '6px',
                 background: i < exchangeCount
-                  ? 'linear-gradient(90deg, #48cfad, #3ab595)'
+                  ? `linear-gradient(90deg, ${accentTo}, ${accentFrom})`
                   : i === exchangeCount
-                  ? 'rgba(72,207,173,0.4)'
+                  ? `${accentTo}66`
                   : 'rgba(255,255,255,0.08)',
               }}
             />
@@ -383,7 +434,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
                 {/* ── AI message ── */}
                 {msg.sender === 'ai' && (
                   <>
-                    <SageAvatar />
+                    <SageAvatar accentColor={accentTo} />
                     <div
                       className="ml-3 px-5 py-4 rounded-2xl rounded-tl-sm max-w-[78%] leading-relaxed text-sm"
                       style={{
@@ -429,7 +480,7 @@ export default function DiagnosticChat({ onComplete }: DiagnosticChatProps) {
                 exit={{   opacity: 0,  y: -5  }}
                 className="flex justify-start items-center gap-3"
               >
-                <SageAvatar />
+                <SageAvatar accentColor={accentTo} />
                 <div
                   className="ml-3 px-5 py-4 rounded-2xl rounded-tl-sm backdrop-blur-md flex gap-1.5 items-center"
                   style={{
