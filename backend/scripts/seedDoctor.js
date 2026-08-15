@@ -14,7 +14,7 @@ async function main() {
   const [name, email, password, specialization = '', expertise = '', experience = ''] = process.argv.slice(2);
 
   if (!name || !email || !password) {
-    console.error('Usage: node scripts/seedDoctor.js "Dr. Haris Amin" harisamin@gmail.com haris@1234 ["Addiction Psychiatry"] ["Digital & nicotine dependence, CBT"] ["6 Years"]');
+    console.error('Usage: node scripts/seedDoctor.js "Dr. Haris Amin" nima.en07@gmail.com haris@1234 ["Addiction Psychiatry"] ["Digital & nicotine dependence, CBT"] ["6 Years"]');
     process.exit(1);
   }
   if (!process.env.MONGO_URI) {
