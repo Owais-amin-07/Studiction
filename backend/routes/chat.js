@@ -1,5 +1,6 @@
 const express        = require('express');
-const axios          = require('axios');
+// const axios          = require('axios');
+const { callGemini } = require('../utils/gemini');
 const PremiumRequest = require('../models/PremiumRequest');
 const ChatMessage    = require('../models/ChatMessage');
 const eitherAuth     = require('../middleware/eitherAuth');
@@ -120,22 +121,38 @@ router.post('/:requestId/ai-tip', async (req, res, next) => {
       .map((m) => `${m.senderType === 'patient' ? 'Patient' : 'Doctor'}: ${m.content}`)
       .join('\n');
 
-    const { data } = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-          {
+
+
+    const data = await callGemini({
+      messages: [ {
             role: 'system',
             content: `You are a private coaching assistant for a doctor currently in a live chat with a patient recovering from digital or nicotine addiction. The patient never sees this. Given the recent transcript, give ONE short, actionable tip — an angle worth exploring, a warning sign to watch for, or a way to phrase something with more empathy. 1-2 sentences, plain text, no JSON, no preamble.`,
           },
           { role: 'user', content: transcript || 'The conversation has just started — no messages yet.' },
-        ],
-        max_tokens: 120,
-        temperature: 0.6,
-      },
-      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
-    );
+         ],
+      max_tokens: 120,
+      temperature: 0.6,
+    });
+
+
+
+
+    // const { data } = await axios.post(
+    //   'https://api.groq.com/openai/v1/chat/completions',
+    //   {
+    //     model: 'llama-3.3-70b-versatile',
+    //     messages: [
+    //       {
+    //         role: 'system',
+    //         content: `You are a private coaching assistant for a doctor currently in a live chat with a patient recovering from digital or nicotine addiction. The patient never sees this. Given the recent transcript, give ONE short, actionable tip — an angle worth exploring, a warning sign to watch for, or a way to phrase something with more empathy. 1-2 sentences, plain text, no JSON, no preamble.`,
+    //       },
+    //       { role: 'user', content: transcript || 'The conversation has just started — no messages yet.' },
+    //     ],
+    //     max_tokens: 120,
+    //     temperature: 0.6,
+    //   },
+    //   { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+    // );
 
     const tip = data.choices?.[0]?.message?.content?.trim() || 'No tip available right now.';
     res.json({ tip });
@@ -160,22 +177,39 @@ router.post('/:requestId/recommendation/draft', async (req, res, next) => {
       .map((m) => `${m.senderType === 'patient' ? 'Patient' : 'Doctor'}: ${m.content}`)
       .join('\n') || '(no messages were exchanged this session)';
 
-    const { data } = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-          {
+
+
+    const data = await callGemini({
+      messages: [ {
             role: 'system',
             content: `You are helping a doctor draft a short Recommendation / Care Plan for a patient after a live chat session about digital or nicotine addiction recovery. This is NOT a medical prescription — never mention medication names, dosages, or any pharmaceutical content. Write 3-5 sentences: acknowledge their situation specifically (referencing something from the transcript), suggest concrete behavioral next steps, and end with encouragement. Warm, professional, plain text — no headers, no markdown, no lists.`,
           },
           { role: 'user', content: `Pre-chat summary: ${request.report?.summary || 'N/A'}\n\nSession transcript:\n${transcript}` },
-        ],
-        max_tokens: 300,
-        temperature: 0.6,
-      },
-      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
-    );
+         ],
+      max_tokens: 120,
+      temperature: 0.6,
+    });
+
+
+
+
+
+    // const { data } = await axios.post(
+    //   'https://api.groq.com/openai/v1/chat/completions',
+    //   {
+    //     model: 'llama-3.3-70b-versatile',
+    //     messages: [
+    //       {
+    //         role: 'system',
+    //         content: `You are helping a doctor draft a short Recommendation / Care Plan for a patient after a live chat session about digital or nicotine addiction recovery. This is NOT a medical prescription — never mention medication names, dosages, or any pharmaceutical content. Write 3-5 sentences: acknowledge their situation specifically (referencing something from the transcript), suggest concrete behavioral next steps, and end with encouragement. Warm, professional, plain text — no headers, no markdown, no lists.`,
+    //       },
+    //       { role: 'user', content: `Pre-chat summary: ${request.report?.summary || 'N/A'}\n\nSession transcript:\n${transcript}` },
+    //     ],
+    //     max_tokens: 300,
+    //     temperature: 0.6,
+    //   },
+    //   { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
+    // );
 
     const draft = data.choices?.[0]?.message?.content?.trim() || '';
     res.json({ draft });

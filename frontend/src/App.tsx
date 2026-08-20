@@ -324,7 +324,7 @@ useEffect(() => {
           )}
         </Suspense>
 
-        {view !== 'welcome' && view !== 'doctor-login' && view !== 'doctor-portal' && (
+        { (view === 'landing' || view === 'dashboard') && (
         <Navbar
           isLoggedIn={isLoggedIn}
           onLoginClick={isLoggedIn ? openAccount : openLogin}
